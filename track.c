@@ -104,8 +104,8 @@ static int more_space(struct track *tr)
 
     tr->block[tr->blocks++] = block;
 
-    debug("allocated new track block (%d blocks, %zu bytes)",
-          tr->blocks, tr->blocks * TRACK_BLOCK_SAMPLES * SAMPLE);
+    debug("allocated new track block (%d blocks, %zu bytes) for track %p",
+          tr->blocks, tr->blocks * TRACK_BLOCK_SAMPLES * SAMPLE, tr);
 
     return 0;
 }
@@ -213,7 +213,7 @@ static void commit(struct track *tr, size_t len)
  * Post: track is importing
  */
 
-static int track_init(struct track *t, const char *importer, const char *path)
+static int track_init(struct track *t, const char *importer, const char *path, bool reuse)
 {
     pid_t pid;
 
@@ -228,8 +228,8 @@ static int track_init(struct track *t, const char *importer, const char *path)
     t->terminated = false;
 
     t->refcount = 0;
+    t->reusable = false;
 
-    t->blocks = 0;
     t->rate = RATE;
 
     t->bytes = 0;
@@ -240,17 +240,22 @@ static int track_init(struct track *t, const char *importer, const char *path)
     t->importer = importer;
     t->path = path;
 
-    list_add(&t->tracks, &tracks);
+    if (!reuse) {
+        t->blocks = 0;
+        list_add(&t->tracks, &tracks);
+    }
+
     rig_post_track(t);
+
+    debug("NEW TRACK: %p, %s, blocks=%d", t, reuse?"reuse":"new", t->blocks);
 
     return 0;
 }
 
 /*
- * Destroy this track from memory
+ * Flagging the track as reusable
  *
- * Terminates any import processes and frees any memory allocated by
- * this object.
+ * Terminates any import processes and sets the reusable flag
  *
  * Pre: track is not importing
  * Pre: track is initialised
@@ -258,12 +263,9 @@ static int track_init(struct track *t, const char *importer, const char *path)
 
 static void track_clear(struct track *tr)
 {
-    int n;
-
     assert(tr->pid == 0);
 
-    for (n = 0; n < tr->blocks; n++)
-        free(tr->block[n]);
+    tr->reusable = true;
 
     list_del(&tr->tracks);
 }
@@ -289,6 +291,26 @@ static struct track* track_get_again(const char *importer, const char *path)
 }
 
 /*
+ * Get a pointer to a reusable track object
+ *
+ * Return: pointer, or NULL if no such track exists
+ */
+
+static struct track* track_get_reusable()
+{
+    struct track *t;
+
+    list_for_each(t, &tracks, tracks) {
+        if (t->reusable) {
+            printf("YES!!!\n");
+            return t;
+        }
+    }
+
+    return NULL;
+}
+
+/*
  * Get a pointer to a track object for the given importer and path
  *
  * Return: pointer, or NULL if not enough resources
@@ -302,16 +324,24 @@ struct track* track_acquire_by_import(const char *importer, const char *path)
     if (t != NULL)
         return t;
 
+    t = track_get_reusable();
+    if (t != NULL) {
+        track_init(t, importer, path, true);
+        track_acquire(t);
+        return t;
+    }
+
     t = malloc(sizeof *t);
     if (t == NULL) {
         perror("malloc");
         return NULL;
     }
 
-    if (track_init(t, importer, path) == -1) {
+    if (track_init(t, importer, path, false) == -1) {
         free(t);
         return NULL;
     }
+
 
     track_acquire(t);
 
@@ -333,6 +363,7 @@ struct track* track_acquire_empty(void)
 void track_acquire(struct track *t)
 {
     t->refcount++;
+    debug("Acquiring track %p, new refcount=%d", t, t->refcount);
 }
 
 /*
@@ -357,6 +388,8 @@ void track_release(struct track *t)
 {
     t->refcount--;
 
+    debug("Releasing track %p, new refcount=%d", t, t->refcount);
+
     /* When importing, a reference is held. If it's the
      * only one remaining terminate it to save resources */
 
@@ -368,7 +401,6 @@ void track_release(struct track *t)
     if (t->refcount == 0) {
         assert(t != &empty);
         track_clear(t);
-        free(t);
     }
 }
 

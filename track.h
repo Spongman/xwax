@@ -43,6 +43,7 @@ struct track {
     struct list tracks;
     unsigned int refcount;
     int rate;
+    bool reusable;
 
     /* pointers to external data */
    
