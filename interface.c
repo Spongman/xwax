@@ -678,7 +678,7 @@ static void draw_record(SDL_Surface *surface, const struct rect *rect,
 static void draw_clock(SDL_Surface *surface, const struct rect *rect, int t,
                        SDL_Color col)
 {
-    char hms[8], deci[8];
+    char hms[9], deci[8];
     short int v;
     struct rect sr;
 
